@@ -3,16 +3,22 @@
 #include <functional>
 #include <unordered_set>
 #include <cmath>
+#include <memory>
 
-// Value- data, grad, parent nodes, and a local backward fn for chain rule
-class Value {
+class Value;
+using SP = std::shared_ptr<Value>;
+
+// Value- heap-allocated node in the compute graph, owns its data/grad/backward fn
+class Value : public std::enable_shared_from_this<Value> {
 public:
     double data, grad = 0.0;
-    std::vector<Value*> prev;
+    std::vector<SP> prev;
     std::function<void()> _backward = [] {};
 
-    Value(double data, std::vector<Value*> parents = {})
-        : data(data), prev(parents) {}
+    // factory- always construct on heap so shared_from_this works
+    static SP make(double data, std::vector<SP> parents = {}) {
+        return std::shared_ptr<Value>(new Value(data, std::move(parents)));
+    }
 
     // topological sort then reverse-accumulate gradients
     void backward() {
@@ -21,7 +27,7 @@ public:
 
         std::function<void(Value*)> build = [&](Value* v) {
             if (visited.insert(v).second)
-                for (auto p : v->prev) build(p);
+                for (auto& p : v->prev) build(p.get());
             topo.push_back(v);
         };
 
@@ -31,58 +37,64 @@ public:
             (*it)->_backward();
     }
 
-    Value operator+(Value& rhs) {
-        Value out(data + rhs.data, {this, &rhs});
+    SP operator+(SP rhs) {
+        auto out = make(data + rhs->data, {shared_from_this(), rhs});
         // d/dx (a+b) = 1 for both
-        out._backward = [&, &out=out] {
-            grad     += out.grad;
-            rhs.grad += out.grad;
+        out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
+            self->grad += out->grad;
+            rhs->grad  += out->grad;
         };
         return out;
     }
 
-    Value operator-(Value& rhs) {
-        Value out(data - rhs.data, {this, &rhs});
+    SP operator-(SP rhs) {
+        auto out = make(data - rhs->data, {shared_from_this(), rhs});
         // d/dx (a-b) = 1, d/dy = -1
-        out._backward = [&, &out=out] {
-            grad     += out.grad;
-            rhs.grad -= out.grad;
+        out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
+            self->grad += out->grad;
+            rhs->grad  -= out->grad;
         };
         return out;
     }
 
-    Value operator*(Value& rhs) {
-        Value out(data * rhs.data, {this, &rhs});
+    SP operator*(SP rhs) {
+        auto out = make(data * rhs->data, {shared_from_this(), rhs});
         // product rule: da = b, db = a
-        out._backward = [&, &out=out] {
-            grad     += rhs.data * out.grad;
-            rhs.grad += data     * out.grad;
+        out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
+            self->grad += rhs->data  * out->grad;
+            rhs->grad  += self->data * out->grad;
         };
         return out;
     }
 
-    Value operator/(Value& rhs) {
-        Value out(data / rhs.data, {this, &rhs});
+    SP operator/(SP rhs) {
+        auto out = make(data / rhs->data, {shared_from_this(), rhs});
         // quotient rule: da = 1/b, db = -a/b^2
-        out._backward = [&, &out=out] {
-            grad     +=  out.grad / rhs.data;
-            rhs.grad += -data * out.grad / (rhs.data * rhs.data);
+        out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
+            self->grad +=  out->grad / rhs->data;
+            rhs->grad  += -self->data * out->grad / (rhs->data * rhs->data);
         };
         return out;
     }
+
+private:
+    Value(double data, std::vector<SP> parents = {})
+        : data(data), prev(parents) {}
 };
 
 int main() {
-    Value a(3.0), b(4.0), c(2.0);
+    SP a = Value::make(3.0);
+    SP b = Value::make(4.0);
+    SP c = Value::make(2.0);
 
     // f = (a + b) * c
-    Value ab = a + b;
-    Value f  = ab * c;
+    SP ab = a->operator+(b);
+    SP f  = ab->operator*(c);
 
-    f.backward();
+    f->backward();
 
-    std::cout << "f    = " << f.data  << "\n"; // 14
-    std::cout << "df/da = " << a.grad << "\n"; // 2
-    std::cout << "df/db = " << b.grad << "\n"; // 2
-    std::cout << "df/dc = " << c.grad << "\n"; // 7
+    std::cout << "f    = " << f->data  << "\n"; // 14
+    std::cout << "df/da = " << a->grad << "\n"; // 2
+    std::cout << "df/db = " << b->grad << "\n"; // 2
+    std::cout << "df/dc = " << c->grad << "\n"; // 7
 }
