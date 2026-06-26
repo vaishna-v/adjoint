@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <cmath>
 #include <memory>
+#include <random>
 
 class Value;
 using SP = std::shared_ptr<Value>;
@@ -120,26 +121,96 @@ inline SP operator/(SP a, SP b) { return (*a) / b; }
 
 inline SP V(double d) { return Value::make(d); }
 
+// random weight init in [-1, 1]
+static std::mt19937 rng(42);
+static std::uniform_real_distribution<double> dist(-1.0, 1.0);
+inline SP randW() { return V(dist(rng)); }
+
+// Neuron- one dot product + bias, optional nonlinearity
+class Neuron {
+public:
+    std::vector<SP> w;
+    SP b;
+    bool nonlin;
+
+    Neuron(int nin, bool nonlin = true) : b(V(0.0)), nonlin(nonlin) {
+        for (int i = 0; i < nin; i++) w.push_back(randW());
+    }
+
+    SP operator()(const std::vector<SP>& x) {
+        auto act = b;
+        for (int i = 0; i < (int)w.size(); i++) act = act + w[i] * x[i];
+        return nonlin ? act->tanh() : act;
+    }
+
+    std::vector<SP> params() {
+        auto p = w;
+        p.push_back(b);
+        return p;
+    }
+};
+
+// Layer- a row of neurons all receiving the same input
+class Layer {
+public:
+    std::vector<Neuron> neurons;
+
+    Layer(int nin, int nout, bool nonlin = true) {
+        for (int i = 0; i < nout; i++) neurons.emplace_back(nin, nonlin);
+    }
+
+    std::vector<SP> operator()(const std::vector<SP>& x) {
+        std::vector<SP> out;
+        for (auto& n : neurons) out.push_back(n(x));
+        return out;
+    }
+
+    std::vector<SP> params() {
+        std::vector<SP> p;
+        for (auto& n : neurons)
+            for (auto& v : n.params()) p.push_back(v);
+        return p;
+    }
+};
+
+// MLP- stack of layers, last one has no nonlinearity (raw logit/regression output)
+class MLP {
+public:
+    std::vector<Layer> layers;
+
+    // sizes = [nin, h1, h2, ..., nout]
+    MLP(std::vector<int> sizes) {
+        for (int i = 0; i < (int)sizes.size() - 1; i++) {
+            bool last = (i == (int)sizes.size() - 2);
+            layers.emplace_back(sizes[i], sizes[i+1], !last);
+        }
+    }
+
+    std::vector<SP> operator()(std::vector<SP> x) {
+        for (auto& l : layers) x = l(x);
+        return x;
+    }
+
+    std::vector<SP> params() {
+        std::vector<SP> p;
+        for (auto& l : layers)
+            for (auto& v : l.params()) p.push_back(v);
+        return p;
+    }
+
+    void zero_grad() { for (auto& p : params()) p->zero_grad(); }
+};
+
 int main() {
-    SP a = V(3.0);
-    SP b = V(4.0);
-    SP c = V(2.0);
+    // create a simple MLP: 2 inputs -> 1 hidden layer with 3 neurons -> 1 output neuron
+    MLP model({2, 3, 1});
 
-    // f = (a + b) * c
-    SP ab = a + b;
-    SP f  = ab * c;
+    std::vector<SP> x = {V(2.0), V(3.0)};
+    SP out = model(x)[0];
 
-    f->backward();
+    out->backward();
 
-    std::cout << "f    = " << f->data  << "\n"; // 14
-    std::cout << "df/da = " << a->grad << "\n"; // 2
-    std::cout << "df/db = " << b->grad << "\n"; // 2
-    std::cout << "df/dc = " << c->grad << "\n"; // 7
-
-    // verify new math operations
-    SP x = V(0.5);
-    SP y = x->tanh();
-    y->backward();
-    std::cout << "tanh(0.5)  = " << y->data << "\n";
-    std::cout << "d(tanh)/dx = " << x->grad << "\n"; // 1 - tanh(0.5)^2
+    std::cout << "Output value = " << out->data << "\n";
+    std::cout << "Total parameters in MLP = " << model.params().size() << "\n";
+    std::cout << "Bias gradient of first hidden neuron = " << model.layers[0].neurons[0].b->grad << "\n";
 }
