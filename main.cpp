@@ -6,6 +6,7 @@
 #include <memory>
 #include <random>
 
+// forward declare so Neuron/Layer/MLP can use SP
 class Value;
 using SP = std::shared_ptr<Value>;
 
@@ -23,7 +24,7 @@ public:
 
     void zero_grad() { grad = 0.0; }
 
-    // topological sort then reverse-accumulate gradients
+    // topological sort then reverse-accumulate
     void backward() {
         std::vector<Value*> topo;
         std::unordered_set<Value*> visited;
@@ -40,9 +41,9 @@ public:
             (*it)->_backward();
     }
 
+    // ops return SP so the result lives on the heap and captures are safe
     SP operator+(SP rhs) {
         auto out = make(data + rhs->data, {shared_from_this(), rhs});
-        // d/dx (a+b) = 1 for both
         out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
             self->grad += out->grad;
             rhs->grad  += out->grad;
@@ -52,7 +53,6 @@ public:
 
     SP operator-(SP rhs) {
         auto out = make(data - rhs->data, {shared_from_this(), rhs});
-        // d/dx (a-b) = 1, d/dy = -1
         out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
             self->grad += out->grad;
             rhs->grad  -= out->grad;
@@ -62,7 +62,6 @@ public:
 
     SP operator*(SP rhs) {
         auto out = make(data * rhs->data, {shared_from_this(), rhs});
-        // product rule: da = b, db = a
         out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
             self->grad += rhs->data  * out->grad;
             rhs->grad  += self->data * out->grad;
@@ -72,7 +71,6 @@ public:
 
     SP operator/(SP rhs) {
         auto out = make(data / rhs->data, {shared_from_this(), rhs});
-        // quotient rule: da = 1/b, db = -a/b^2
         out->_backward = [self = shared_from_this(), rhs, out = out.get()] {
             self->grad +=  out->grad / rhs->data;
             rhs->grad  += -self->data * out->grad / (rhs->data * rhs->data);
@@ -109,15 +107,15 @@ public:
     }
 
 private:
-    Value(double data, std::vector<SP> parents = {})
-        : data(data), prev(parents) {}
+    Value(double data, std::vector<SP> parents)
+        : data(data), prev(std::move(parents)) {}
 };
 
 // helpers so you can write  a + b  instead of  a->operator+(b)
-inline SP operator+(SP a, SP b) { return (*a) + b; }
-inline SP operator-(SP a, SP b) { return (*a) - b; }
-inline SP operator*(SP a, SP b) { return (*a) * b; }
-inline SP operator/(SP a, SP b) { return (*a) / b; }
+SP operator+(SP a, SP b) { return (*a) + b; }
+SP operator-(SP a, SP b) { return (*a) - b; }
+SP operator*(SP a, SP b) { return (*a) * b; }
+SP operator/(SP a, SP b) { return (*a) / b; }
 
 inline SP V(double d) { return Value::make(d); }
 
