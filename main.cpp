@@ -201,16 +201,44 @@ public:
     void zero_grad() { for (auto& p : params()) p->zero_grad(); }
 };
 
+// SGD- nudge each param opposite to its gradient
+class SGD {
+public:
+    std::vector<SP> params;
+    double lr;
+
+    SGD(std::vector<SP> params, double lr) : params(params), lr(lr) {}
+
+    void step() {
+        for (auto& p : params) p->data -= lr * p->grad;
+    }
+
+    void zero_grad() { for (auto& p : params) p->zero_grad(); }
+};
+
 int main() {
-    // create a simple MLP: 2 inputs -> 1 hidden layer with 3 neurons -> 1 output neuron
-    MLP model({2, 3, 1});
+    // tiny dataset- XOR-like, 2 inputs -> 1 output
+    std::vector<std::vector<double>> X = {{0,0},{0,1},{1,0},{1,1}};
+    std::vector<double>              Y = { -1,   1,   1,  -1 };
 
-    std::vector<SP> x = {V(2.0), V(3.0)};
-    SP out = model(x)[0];
+    MLP model({2, 4, 4, 1});
+    SGD optim(model.params(), 0.05);
 
-    out->backward();
+    for (int epoch = 0; epoch < 100; epoch++) {
+        // forward + MSE loss
+        SP loss = V(0.0);
+        for (int i = 0; i < 4; i++) {
+            std::vector<SP> x = {V(X[i][0]), V(X[i][1])};
+            SP pred = model(x)[0];
+            SP diff = pred - V(Y[i]);
+            loss = loss + diff->pow(2);
+        }
 
-    std::cout << "Output value = " << out->data << "\n";
-    std::cout << "Total parameters in MLP = " << model.params().size() << "\n";
-    std::cout << "Bias gradient of first hidden neuron = " << model.layers[0].neurons[0].b->grad << "\n";
+        optim.zero_grad();
+        loss->backward();
+        optim.step();
+
+        if (epoch % 10 == 0)
+            std::cout << "epoch " << epoch << "  loss = " << loss->data << "\n";
+    }
 }
