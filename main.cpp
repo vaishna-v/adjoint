@@ -20,6 +20,8 @@ public:
         return std::shared_ptr<Value>(new Value(data, std::move(parents)));
     }
 
+    void zero_grad() { grad = 0.0; }
+
     // topological sort then reverse-accumulate gradients
     void backward() {
         std::vector<Value*> topo;
@@ -77,19 +79,55 @@ public:
         return out;
     }
 
+    // d/dx x^n = n * x^(n-1)
+    SP pow(double exp) {
+        auto out = make(std::pow(data, exp), {shared_from_this()});
+        out->_backward = [self = shared_from_this(), exp, out = out.get()] {
+            self->grad += exp * std::pow(self->data, exp - 1) * out->grad;
+        };
+        return out;
+    }
+
+    // tanh and its derivative (1 - tanh^2)
+    SP tanh() {
+        double t = std::tanh(data);
+        auto out = make(t, {shared_from_this()});
+        out->_backward = [self = shared_from_this(), t, out = out.get()] {
+            self->grad += (1.0 - t * t) * out->grad;
+        };
+        return out;
+    }
+
+    // relu- passes gradient only where input was positive
+    SP relu() {
+        auto out = make(data > 0 ? data : 0.0, {shared_from_this()});
+        out->_backward = [self = shared_from_this(), out = out.get()] {
+            self->grad += (out->data > 0 ? 1.0 : 0.0) * out->grad;
+        };
+        return out;
+    }
+
 private:
     Value(double data, std::vector<SP> parents = {})
         : data(data), prev(parents) {}
 };
 
+// helpers so you can write  a + b  instead of  a->operator+(b)
+inline SP operator+(SP a, SP b) { return (*a) + b; }
+inline SP operator-(SP a, SP b) { return (*a) - b; }
+inline SP operator*(SP a, SP b) { return (*a) * b; }
+inline SP operator/(SP a, SP b) { return (*a) / b; }
+
+inline SP V(double d) { return Value::make(d); }
+
 int main() {
-    SP a = Value::make(3.0);
-    SP b = Value::make(4.0);
-    SP c = Value::make(2.0);
+    SP a = V(3.0);
+    SP b = V(4.0);
+    SP c = V(2.0);
 
     // f = (a + b) * c
-    SP ab = a->operator+(b);
-    SP f  = ab->operator*(c);
+    SP ab = a + b;
+    SP f  = ab * c;
 
     f->backward();
 
@@ -97,4 +135,11 @@ int main() {
     std::cout << "df/da = " << a->grad << "\n"; // 2
     std::cout << "df/db = " << b->grad << "\n"; // 2
     std::cout << "df/dc = " << c->grad << "\n"; // 7
+
+    // verify new math operations
+    SP x = V(0.5);
+    SP y = x->tanh();
+    y->backward();
+    std::cout << "tanh(0.5)  = " << y->data << "\n";
+    std::cout << "d(tanh)/dx = " << x->grad << "\n"; // 1 - tanh(0.5)^2
 }
